@@ -182,7 +182,7 @@ static int debug = 0;
 module_param(debug, int, S_IRUGO | S_IWUSR);
 MODULE_PARM_DESC(debug, "debugging level (higher values == more verbose)");
 
-#define V4L2LOOPBACK_DEFAULT_MAX_BUFFERS 2
+#define V4L2LOOPBACK_DEFAULT_MAX_BUFFERS 4
 static int max_buffers = V4L2LOOPBACK_DEFAULT_MAX_BUFFERS;
 module_param(max_buffers, int, S_IRUGO);
 MODULE_PARM_DESC(max_buffers,
@@ -930,6 +930,7 @@ static int vidioc_querycap(struct file *file, void *fh,
 	return 0;
 }
 
+#ifndef ANDROID_PLATFORM
 static int vidioc_enum_framesizes(struct file *file, void *fh,
 				  struct v4l2_frmsizeenum *argp)
 {
@@ -975,6 +976,32 @@ static int vidioc_enum_framesizes(struct file *file, void *fh,
 	}
 	return 0;
 }
+#else
+static int vidioc_enum_framesizes(struct file *file, void *fh,
+				  struct v4l2_frmsizeenum *argp)
+{
+	struct v4l2_loopback_device *dev = v4l2loopback_getdevice(file);
+	// struct v4l2_loopback_opener *opener = v4l2l_f_to_opener(file, fh);
+
+	/* there can be only one... */
+	// 这个地方还可以改，支持多个分辨率
+	if (argp->index)
+		return -EINVAL;
+
+    // 先暂时只支持NV12
+    if (argp->pixel_format != V4L2_PIX_FMT_NV12)
+		return -EINVAL;
+
+	/* Android固定的分辨率 */
+    /* 原本函数返回的是V4L2_FRMSIZE_TYPE_CONTINUOUS = 2 */
+    /* 现在先写死固定V4L2_FRMSIZE_TYPE_DISCRETE 固定分辨率 */
+	argp->type = V4L2_FRMSIZE_TYPE_DISCRETE;
+
+	argp->discrete.width = dev->pix_format.width;
+	argp->discrete.height = dev->pix_format.height;
+	return 0;
+}
+#endif
 
 /* Test if the device is currently 'capable' of the buffer (stream) type when
  * the `exclusive_caps` parameter is set. `keep_format` should lock the format
@@ -1009,9 +1036,11 @@ static int check_buffer_capability(struct v4l2_loopback_device *dev,
 	}
 	return 0;
 }
+
 /* returns frameinterval (fps) for the set resolution
  * called on VIDIOC_ENUM_FRAMEINTERVALS
  */
+#ifndef ANDROID_PLATFORM
 static int vidioc_enum_frameintervals(struct file *file, void *fh,
 				      struct v4l2_frmivalenum *argp)
 {
@@ -1050,6 +1079,45 @@ static int vidioc_enum_frameintervals(struct file *file, void *fh,
 
 	return 0;
 }
+#else
+static int vidioc_enum_frameintervals(struct file *file, void *fh,
+				      struct v4l2_frmivalenum *argp)
+{
+	struct v4l2_loopback_device *dev = v4l2loopback_getdevice(file);
+	// struct v4l2_loopback_opener *opener = v4l2l_f_to_opener(file, fh);
+
+	/* there can be only one... */
+	if (argp->index)
+		return -EINVAL;
+
+	/*
+	printk("argp->size: %dx%d, format:%c%c%c%c", argp->width, argp->height, 
+		argp->pixel_format & 0xFF, 
+		(argp->pixel_format >> 8) & 0xFF,
+        (argp->pixel_format >> 16) & 0xFF,
+    	(argp->pixel_format >> 24) & 0xFF);
+	printk("dev->size: %dx%d, format:%c%c%c%c", dev->pix_format.width, dev->pix_format.height, 
+		dev->pix_format.pixelformat & 0xFF, 
+		(dev->pix_format.pixelformat >> 8) & 0xFF,
+        (dev->pix_format.pixelformat >> 16) & 0xFF,
+    	(dev->pix_format.pixelformat >> 24) & 0xFF);
+	*/
+
+	/* Android 固定帧率 */
+	/* 在没有 ioctl VIDIOC_S_FMT 之前，dev->pix_format.pixelformat = BGR4 */
+	/* 这个判断先不要
+	if (argp->width != dev->pix_format.width ||
+		argp->height != dev->pix_format.height ||
+		argp->pixel_format != dev->pix_format.pixelformat)
+		return -EINVAL;
+	*/
+
+	argp->type = V4L2_FRMIVAL_TYPE_DISCRETE;
+	argp->discrete = dev->capture_param.timeperframe;
+
+	return 0;
+}
+#endif
 
 /* Enumerate device formats
  * Returns:
@@ -2207,6 +2275,7 @@ static struct vm_operations_struct vm_ops = {
 
 static int v4l2_loopback_mmap(struct file *file, struct vm_area_struct *vma)
 {
+	u32 index;
 	u8 *addr;
 	unsigned long start, size, offset;
 	struct v4l2_loopback_device *dev = v4l2loopback_getdevice(file);
@@ -2254,7 +2323,7 @@ static int v4l2_loopback_mmap(struct file *file, struct vm_area_struct *vma)
 			result = -EINVAL;
 			goto exit_mmap_unlock;
 		}
-		u32 index = offset / dev->buffer_size;
+		index = offset / dev->buffer_size;
 		buffer = &dev->buffers[index];
 		addr = dev->image + offset;
 		break;
